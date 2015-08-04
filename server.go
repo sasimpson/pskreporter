@@ -14,11 +14,20 @@ var (
 )
 
 // Report data structure
-type Report struct {
-	sender    string  `gorethink:"senderCallsign,omitempty"`
-	receiver  string  `gorethink:"receiverCallsign,omitempty"`
-	frequency float32 `gorethink:"frequency,omitempty"`
-	mode      string  `gorethink:"mode,omitempty"`
+type report struct {
+	Sender               string    `gorethink:"senderCallsign"`
+	Receiver             string    `gorethink:"receiverCallsign,omitempty"`
+	SenderLocator        string    `gorethink:"senderLocator"`
+	ReceiverLocator      string    `gorethink:"receiverLocator,omitempty"`
+	Frequency            int32     `gorethink:"frequency"`
+	Mode                 string    `gorethink:"mode"`
+	SNR                  uint8     `gorethink:"snr,omitempty"`
+	IMD                  uint8     `gorethink:"imd,omitempty"`
+	DecoderSoftware      string    `gorethink:"decoderSoftware,omitempty"`
+	AntennaInformation   string    `gorethink:"antennaInformation,omitempty"`
+	InformationSource    int8      `gorethink:"informationSource,omitempty"`
+	PersistentIdentifier string    `gorethink:"persistentIdentifier,omitempty"`
+	FlowStartSeconds     time.Time `gorethink:"flowStartSeconds,omitempty"`
 }
 
 type myStruct struct {
@@ -31,27 +40,27 @@ func CheckError(fail bool, err error) {
 		if fail {
 			log.Fatalln(err)
 		} else {
-			// log.Println(err)
+			log.Println(err)
 		}
 	}
 }
 
 func serviceListener() {
 	jobs := make(chan []byte, 1000)
-	rethinkWorkerPool := make(chan myStruct, 1000)
-	workers := 100
-	rtworkers := 10
+	rethinkWorkerPool := make(chan report, 1000)
+	workers := 10
+	rtworkers := 1
 	for rt := 0; rt <= rtworkers; rt++ {
 		go rethinkWorker(rt, rethinkWorkerPool)
 	}
-
-	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:8081")
-	sock, err := net.ListenUDP("udp", addr)
-	CheckError(true, err)
 	buf := make([]byte, 2048)
 	for i := 0; i <= workers; i++ {
 		go processData(i, jobs, rethinkWorkerPool)
 	}
+	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:8081")
+	sock, err := net.ListenUDP("udp", addr)
+	CheckError(true, err)
+
 	counter := 0
 	for {
 		rlen, _, err := sock.ReadFromUDP(buf)
@@ -63,15 +72,15 @@ func serviceListener() {
 	}
 }
 
-func processData(w int, jobs <-chan []byte, rtWP chan<- myStruct) {
+func processData(w int, jobs <-chan []byte, rtWP chan<- report) {
 	for bufferData := range jobs {
 		s := ipfix.NewSession()
 		i := ipfix.NewInterpreter(s)
 
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderCallsign", FieldID: 1, EnterpriseID: 30351, Type: ipfix.String})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverCallsign", FieldID: 2, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderLocation", FieldID: 3, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverLocation", FieldID: 4, EnterpriseID: 30351, Type: ipfix.String})
+		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderLocator", FieldID: 3, EnterpriseID: 30351, Type: ipfix.String})
+		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverLocator", FieldID: 4, EnterpriseID: 30351, Type: ipfix.String})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "frequency", FieldID: 5, EnterpriseID: 30351, Type: ipfix.Int32})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "sNR", FieldID: 6, EnterpriseID: 30351, Type: ipfix.Uint8})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "iMD", FieldID: 7, EnterpriseID: 30351, Type: ipfix.Uint8})
@@ -87,65 +96,62 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- myStruct) {
 
 		var fieldList []ipfix.InterpretedField
 		for _, record := range msg.DataRecords {
+			log.Println("foo")
 			fieldList = i.InterpretInto(record, fieldList)
 
-			var data = map[string]interface{}{}
+			var data report
 
 			for _, f := range fieldList {
 				if f.EnterpriseID == 30351 {
 					switch f.FieldID {
 					case 1:
-						data["sender"] = f.Value.(string)
+						data.Sender = f.Value.(string)
 					case 2:
-						data["receiver"] = f.Value.(string)
+						data.Receiver = f.Value.(string)
 					case 3:
-						data["sender_location"] = f.Value.(string)
+						data.SenderLocator = f.Value.(string)
 					case 4:
-						data["receiver_location"] = f.Value.(string)
+						data.ReceiverLocator = f.Value.(string)
 					case 5:
-						data["frequency"] = f.Value.(int32)
+						data.Frequency = f.Value.(int32)
 					case 6:
-						data["snr"] = f.Value.(uint8)
+						data.SNR = f.Value.(uint8)
 					case 7:
-						data["imd"] = f.Value.(uint8)
+						data.IMD = f.Value.(uint8)
 					case 8:
-						data["decoder_software"] = f.Value.(string)
+						data.DecoderSoftware = f.Value.(string)
 					case 9:
-						data["antenna_information"] = f.Value.(string)
+						data.AntennaInformation = f.Value.(string)
 					case 10:
-						data["mode"] = f.Value.(string)
+						data.Mode = f.Value.(string)
 					case 11:
-						data["information_source"] = f.Value.(int8)
+						data.InformationSource = f.Value.(int8)
 					case 12:
-						data["persistent_identifier"] = f.Value.(string)
+						data.PersistentIdentifier = f.Value.(string)
 					}
 				} else {
 					switch f.FieldID {
 					case 150:
-						data["flow_start_seconds"] = f.Value.(time.Time)
-						// default:
-						// log.Printf("non-conforming enterprise id: [%v] => [%v][%v]", f.Name, f.Value, f.EnterpriseID)
+						data.FlowStartSeconds = f.Value.(time.Time)
 					}
-
 				}
 			}
-			// log.Println(data)
-			rtWP <- myStruct{data: data}
+			rtWP <- data
 		}
 	}
 }
 
-func rethinkWorker(w int, jobs <-chan myStruct) {
-	listOfStuff := []map[string]interface{}{}
+func rethinkWorker(w int, jobs <-chan report) {
+	var listOfStuff []report
 	for {
 		select {
-		case data1 := <-jobs:
-			listOfStuff = append(listOfStuff, data1.data)
-			if len(listOfStuff) >= 10000 {
+		case data := <-jobs:
+			listOfStuff = append(listOfStuff, data)
+			if len(listOfStuff) >= 10 {
 				wr, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
 				log.Println(w, wr)
 				CheckError(true, err)
-				listOfStuff = []map[string]interface{}{}
+				listOfStuff = make([]report, 0, 100)
 				continue
 			}
 		case <-time.After(time.Second * 1):
@@ -153,7 +159,7 @@ func rethinkWorker(w int, jobs <-chan myStruct) {
 				wr, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
 				log.Println(w, wr)
 				CheckError(true, err)
-				listOfStuff = []map[string]interface{}{}
+				listOfStuff = make([]report, 0, 100)
 				continue
 			}
 		}
