@@ -48,8 +48,8 @@ func CheckError(fail bool, err error) {
 func serviceListener() {
 	jobs := make(chan []byte, 1000)
 	rethinkWorkerPool := make(chan report, 1000)
-	workers := 10
-	rtworkers := 1
+	workers := 200
+	rtworkers := 100
 	for rt := 0; rt <= rtworkers; rt++ {
 		go rethinkWorker(rt, rethinkWorkerPool)
 	}
@@ -96,7 +96,6 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- report) {
 
 		var fieldList []ipfix.InterpretedField
 		for _, record := range msg.DataRecords {
-			log.Println("foo")
 			fieldList = i.InterpretInto(record, fieldList)
 
 			var data report
@@ -142,24 +141,24 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- report) {
 }
 
 func rethinkWorker(w int, jobs <-chan report) {
-	var listOfStuff []report
+	listOfStuff := make([]report, 0, 10000)
 	for {
 		select {
 		case data := <-jobs:
 			listOfStuff = append(listOfStuff, data)
-			if len(listOfStuff) >= 10 {
-				wr, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
-				log.Println(w, wr)
+			if len(listOfStuff) >= 10000 {
+				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
+				// log.Println(w, wr)
 				CheckError(true, err)
-				listOfStuff = make([]report, 0, 100)
+				listOfStuff = make([]report, 0, 10000)
 				continue
 			}
 		case <-time.After(time.Second * 1):
 			if len(listOfStuff) != 0 {
-				wr, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
-				log.Println(w, wr)
+				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
+				// log.Println(w, wr)
 				CheckError(true, err)
-				listOfStuff = make([]report, 0, 100)
+				listOfStuff = make([]report, 0, 10000)
 				continue
 			}
 		}
