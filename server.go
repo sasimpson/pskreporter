@@ -11,12 +11,12 @@ import (
 )
 
 var (
-	rethinkServer       string
-	rethinkWorkers      int
-	processWorkers      int
-	batchSize           = 1000
-	batchTimeoutSeconds = 1
-	session             *r.Session
+	rethinkServer  string
+	rethinkWorkers int
+	processWorkers int
+	batchSize      int
+	batchTimeout   time.Duration
+	session        *r.Session
 )
 
 // Report data structure
@@ -49,8 +49,8 @@ func CheckError(fail bool, err error) {
 
 func serviceListener() {
 	//set up worker pools and processes
-	processWorkerPool := make(chan []byte, 1000)
-	rethinkWorkerPool := make(chan report, 1000)
+	processWorkerPool := make(chan []byte, processWorkers)
+	rethinkWorkerPool := make(chan *report, rethinkWorkers)
 	for rt := 0; rt <= rethinkWorkers; rt++ {
 		go rethinkWorker(rt, rethinkWorkerPool)
 	}
@@ -62,7 +62,6 @@ func serviceListener() {
 	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:8081")
 	sock, err := net.ListenUDP("udp", addr)
 	CheckError(true, err)
-	counter := 0
 	//listen
 	for {
 		rlen, _, err := sock.ReadFromUDP(buf)
@@ -70,13 +69,12 @@ func serviceListener() {
 		readData := make([]byte, rlen)
 		copy(readData, buf[0:rlen])
 		processWorkerPool <- readData
-		counter++
 	}
 }
 
 // processData takes the data from the job channel, processes it and puts it on
 // the rethink worker pool (rtWP)
-func processData(w int, jobs <-chan []byte, rtWP chan<- report) {
+func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
 	for bufferData := range jobs {
 		s := ipfix.NewSession()
 		i := ipfix.NewInterpreter(s)
@@ -139,26 +137,27 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- report) {
 					}
 				}
 			}
-			rtWP <- data
+			//throw reference to the report struct on the rethink queue.
+			rtWP <- &data
 		}
 	}
 }
 
 // rethinkWorker batches the data into quantities specified in batchSize then saves
 // to the database when the batchSize or batchTimeoutSeconds is hit.
-func rethinkWorker(w int, jobs <-chan report) {
+func rethinkWorker(w int, jobs <-chan *report) {
 	listOfStuff := make([]report, 0, batchSize)
 	for {
 		select {
 		case data := <-jobs:
-			listOfStuff = append(listOfStuff, data)
+			listOfStuff = append(listOfStuff, *data)
 			if len(listOfStuff) >= batchSize {
 				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
 				CheckError(true, err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
 			}
-		case <-time.After(time.Second * time.Duration(batchTimeoutSeconds)):
+		case <-time.After(time.Second * time.Duration(batchTimeout)):
 			if len(listOfStuff) != 0 {
 				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
 				CheckError(true, err)
@@ -175,7 +174,10 @@ func main() {
 	flag.IntVar(&processWorkers, "processors", 100, "number of process workers to use, default: 100")
 	flag.IntVar(&rethinkWorkers, "dbworkers", 10, "number of db process workers to use, default: 10")
 	flag.StringVar(&rethinkServer, "rethink-host", "127.0.0.1:28015", "rethinkdb host and port, default: 127.0.0.1:28015")
+	flag.IntVar(&batchSize, "batchsize", 1000, "size of batches to send to rethinkdb")
+	flag.DurationVar(&batchTimeout, "batchtimeout", 1, "timeout for batches in seconds")
 	flag.Parse()
+	log.Println("processes: ", processWorkers, "; db workers: ", rethinkWorkers, "; batch size: ", batchSize)
 
 	session, err = r.Connect(r.ConnectOpts{
 		Address:  rethinkServer,
@@ -183,7 +185,6 @@ func main() {
 		MaxIdle:  10,
 		MaxOpen:  200,
 	})
-
 	CheckError(true, err)
 	serviceListener()
 }
