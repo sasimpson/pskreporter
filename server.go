@@ -1,13 +1,15 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"log"
 	"net"
 	"time"
 
 	r "github.com/dancannon/gorethink"
-	"github.com/sasimpson/ipfix"
+	// "github.com/sasimpson/ipfix"
+	"github.com/calmh/ipfix"
 )
 
 var (
@@ -21,19 +23,29 @@ var (
 
 // Report data structure
 type report struct {
-	Sender               string    `gorethink:"senderCallsign"`
-	Receiver             string    `gorethink:"receiverCallsign,omitempty"`
-	SenderLocator        string    `gorethink:"senderLocator"`
-	ReceiverLocator      string    `gorethink:"receiverLocator,omitempty"`
-	Frequency            int32     `gorethink:"frequency"`
-	Mode                 string    `gorethink:"mode"`
-	SNR                  uint8     `gorethink:"snr,omitempty"`
-	IMD                  uint8     `gorethink:"imd,omitempty"`
-	DecoderSoftware      string    `gorethink:"decoderSoftware,omitempty"`
-	AntennaInformation   string    `gorethink:"antennaInformation,omitempty"`
-	InformationSource    int8      `gorethink:"informationSource,omitempty"`
-	PersistentIdentifier string    `gorethink:"persistentIdentifier,omitempty"`
-	FlowStartSeconds     time.Time `gorethink:"flowStartSeconds,omitempty"`
+	Sender               string `gorethink:"senderCallsign"`
+	Receiver             string `gorethink:"receiverCallsign"`
+	SenderLocator        string `gorethink:"senderLocator"`
+	ReceiverLocator      string `gorethink:"receiverLocator"`
+	Frequency            int32  `gorethink:"frequency"`
+	Mode                 string `gorethink:"mode"`
+	SNR                  uint8  `gorethink:"snr"`
+	IMD                  uint8  `gorethink:"imd"`
+	DecoderSoftware      string `gorethink:"decoderSoftware"`
+	AntennaInformation   string `gorethink:"antennaInformation"`
+	InformationSource    int8   `gorethink:"informationSource"`
+	PersistentIdentifier string `gorethink:"persistentIdentifier"`
+	FlowStartSeconds     time.Time
+	SelectionSequenceID  int8
+	FlowID               uint64
+}
+
+// error report data structure
+type ipfixError struct {
+	BinaryData   string    `gorethink:"binaryData"`
+	LengthOfData int       `gorethink:"lengthOfData"`
+	CreatedAt    time.Time `gorethink:"createdAt"`
+	ErrorType    string    `gorethink:"errorType"`
 }
 
 // CheckError check error function
@@ -92,9 +104,21 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "informationSource", FieldID: 11, EnterpriseID: 30351, Type: ipfix.Int8})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "persistentIdentifier", FieldID: 12, EnterpriseID: 30351, Type: ipfix.String})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowStartSeconds", FieldID: 150, Type: ipfix.DateTimeSeconds})
+		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowID", FieldID: 148, Type: ipfix.Uint64})
+		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "selectionSequenceID", FieldID: 301, Type: ipfix.Uint8})
 
 		msg, err := s.ParseBuffer(bufferData)
-		CheckError(false, err)
+		if err != nil {
+			r.Table("errors").Insert(ipfixError{
+				BinaryData:   hex.EncodeToString(bufferData),
+				LengthOfData: len(bufferData),
+				CreatedAt:    time.Now(),
+				ErrorType:    "ipfix",
+			}).RunWrite(session)
+		} else {
+			// log.Println(bufferData)
+		}
+		// CheckError(false, err)
 
 		var fieldList []ipfix.InterpretedField
 		for _, record := range msg.DataRecords {
@@ -132,9 +156,14 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
 					}
 				} else {
 					switch f.FieldID {
+					case 148:
+						data.FlowID = f.Value.(uint64)
 					case 150:
 						data.FlowStartSeconds = f.Value.(time.Time)
+					case 301:
+						data.SelectionSequenceID = f.Value.(int8)
 					}
+
 				}
 			}
 			//throw reference to the report struct on the rethink queue.
@@ -152,14 +181,14 @@ func rethinkWorker(w int, jobs <-chan *report) {
 		case data := <-jobs:
 			listOfStuff = append(listOfStuff, *data)
 			if len(listOfStuff) >= batchSize {
-				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
+				_, err := r.Table("report").Insert(listOfStuff).RunWrite(session)
 				CheckError(true, err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
 			}
 		case <-time.After(time.Second * time.Duration(batchTimeout)):
 			if len(listOfStuff) != 0 {
-				_, err := r.Table("pskreport").Insert(listOfStuff).RunWrite(session)
+				_, err := r.Table("report").Insert(listOfStuff).RunWrite(session)
 				CheckError(true, err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
@@ -181,7 +210,7 @@ func main() {
 
 	session, err = r.Connect(r.ConnectOpts{
 		Address:  rethinkServer,
-		Database: "radio",
+		Database: "pskreporter",
 		MaxIdle:  10,
 		MaxOpen:  200,
 	})
