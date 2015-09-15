@@ -21,6 +21,12 @@ var (
 	session        *r.Session
 )
 
+type packet struct {
+	Data   []byte
+	Sender net.Addr
+	Size   int
+}
+
 // Report data structure
 type report struct {
 	Sender               string `gorethink:"senderCallsign"`
@@ -38,10 +44,12 @@ type report struct {
 	FlowStartSeconds     time.Time
 	SelectionSequenceID  int8
 	FlowID               uint64
+	SenderAddr           string
+	RawData              string
 }
 
 // error report data structure
-type ipfixError struct {
+type dataError struct {
 	BinaryData   string    `gorethink:"binaryData"`
 	LengthOfData int       `gorethink:"lengthOfData"`
 	CreatedAt    time.Time `gorethink:"createdAt"`
@@ -61,7 +69,7 @@ func CheckError(fail bool, err error) {
 
 func serviceListener() {
 	//set up worker pools and processes
-	processWorkerPool := make(chan []byte, processWorkers)
+	processWorkerPool := make(chan *packet, processWorkers)
 	rethinkWorkerPool := make(chan *report, rethinkWorkers)
 	for rt := 0; rt <= rethinkWorkers; rt++ {
 		go rethinkWorker(rt, rethinkWorkerPool)
@@ -70,23 +78,25 @@ func serviceListener() {
 		go processData(i, processWorkerPool, rethinkWorkerPool)
 	}
 	//setup UDP listenter
-	buf := make([]byte, 2048)
+
 	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:8081")
 	sock, err := net.ListenUDP("udp", addr)
 	CheckError(true, err)
 	//listen
 	for {
-		rlen, _, err := sock.ReadFromUDP(buf)
+		buf := make([]byte, 4096)
+		rawDataPacket := new(packet)
+		rawDataPacket.Size, rawDataPacket.Sender, err = sock.ReadFromUDP(buf)
+		rawDataPacket.Data = make([]byte, rawDataPacket.Size)
 		CheckError(true, err)
-		readData := make([]byte, rlen)
-		copy(readData, buf[0:rlen])
-		processWorkerPool <- readData
+		copy(rawDataPacket.Data, buf[0:rawDataPacket.Size])
+		processWorkerPool <- rawDataPacket
 	}
 }
 
 // processData takes the data from the job channel, processes it and puts it on
 // the rethink worker pool (rtWP)
-func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
+func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 	for bufferData := range jobs {
 		s := ipfix.NewSession()
 		i := ipfix.NewInterpreter(s)
@@ -107,14 +117,15 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowID", FieldID: 148, Type: ipfix.Uint64})
 		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "selectionSequenceID", FieldID: 301, Type: ipfix.Uint8})
 
-		msg, err := s.ParseBuffer(bufferData)
+		msg, err := s.ParseBuffer(bufferData.Data)
 		if err != nil {
-			r.Table("errors").Insert(ipfixError{
-				BinaryData:   hex.EncodeToString(bufferData),
-				LengthOfData: len(bufferData),
+			r.Table("errors").Insert(dataError{
+				BinaryData:   hex.EncodeToString(bufferData.Data),
+				LengthOfData: bufferData.Size,
 				CreatedAt:    time.Now(),
 				ErrorType:    "ipfix",
 			}).RunWrite(session)
+			// log.Println(err	)
 		} else {
 			// log.Println(bufferData)
 		}
@@ -125,6 +136,8 @@ func processData(w int, jobs <-chan []byte, rtWP chan<- *report) {
 			fieldList = i.InterpretInto(record, fieldList)
 
 			var data report
+			data.SenderAddr = bufferData.Sender.String()
+			data.RawData = hex.EncodeToString(bufferData.Data)
 
 			for _, f := range fieldList {
 				if f.EnterpriseID == 30351 {
