@@ -79,7 +79,7 @@ func serviceListener() {
 	}
 	//setup UDP listenter
 
-	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:8081")
+	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:4739")
 	sock, err := net.ListenUDP("udp", addr)
 	CheckError(true, err)
 	//listen
@@ -125,9 +125,10 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 				CreatedAt:    time.Now(),
 				ErrorType:    "ipfix",
 			}).RunWrite(session)
-			// log.Println(err	)
+			log.Println(err	)
 		} else {
 			// log.Println(bufferData)
+			log.Println("good data")
 		}
 		// CheckError(false, err)
 
