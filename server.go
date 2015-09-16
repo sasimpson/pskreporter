@@ -7,18 +7,18 @@ import (
 	"net"
 	"time"
 
-	r "github.com/dancannon/gorethink"
-	// "github.com/sasimpson/ipfix"
 	"github.com/calmh/ipfix"
+	r "github.com/dancannon/gorethink"
 )
 
 var (
-	rethinkServer  string
-	rethinkWorkers int
-	processWorkers int
-	batchSize      int
-	batchTimeout   time.Duration
-	session        *r.Session
+	rethinkServer   string
+	listenerAddress string
+	rethinkWorkers  int
+	processWorkers  int
+	batchSize       int
+	batchTimeout    time.Duration
+	session         *r.Session
 )
 
 type packet struct {
@@ -79,7 +79,7 @@ func serviceListener() {
 	}
 	//setup UDP listenter
 
-	addr, err := net.ResolveUDPAddr("udp", "0.0.0.0:4739")
+	addr, err := net.ResolveUDPAddr("udp", listenerAddress)
 	sock, err := net.ListenUDP("udp", addr)
 	CheckError(true, err)
 	//listen
@@ -125,10 +125,10 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 				CreatedAt:    time.Now(),
 				ErrorType:    "ipfix",
 			}).RunWrite(session)
-			log.Println(err	)
+			// log.Println(err)
 		} else {
 			// log.Println(bufferData)
-			log.Println("good data")
+			// log.Println("good data")
 		}
 		// CheckError(false, err)
 
@@ -219,8 +219,9 @@ func main() {
 	flag.StringVar(&rethinkServer, "rethink-host", "127.0.0.1:28015", "rethinkdb host and port, default: 127.0.0.1:28015")
 	flag.IntVar(&batchSize, "batchsize", 1000, "size of batches to send to rethinkdb")
 	flag.DurationVar(&batchTimeout, "batchtimeout", 1, "timeout for batches in seconds")
+	flag.StringVar(&listenerAddress, "udp listener address", "0.0.0.0:4739", "port and address to set the server to listen on, default: 0.0.0.0:4739")
 	flag.Parse()
-	log.Println("processes: ", processWorkers, "; db workers: ", rethinkWorkers, "; batch size: ", batchSize)
+	log.Println("processes: ", processWorkers, "; db workers: ", rethinkWorkers, "; batch size: ", batchSize, "; listening on: ", listenerAddress)
 
 	session, err = r.Connect(r.ConnectOpts{
 		Address:  rethinkServer,
