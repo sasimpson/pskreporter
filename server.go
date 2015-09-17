@@ -12,13 +12,15 @@ import (
 )
 
 var (
-	rethinkServer   string
-	listenerAddress string
-	rethinkWorkers  int
-	processWorkers  int
-	batchSize       int
-	batchTimeout    time.Duration
-	session         *r.Session
+	rethinkWorkers   int
+	processWorkers   int
+	batchSize        int
+	batchTimeout     time.Duration
+	listenerAddress  string
+	rethinkServer    string
+	rethinkSession   *r.Session
+	ipfixSession     *ipfix.Session
+	ipfixInterpreter *ipfix.Interpreter
 )
 
 type packet struct {
@@ -84,61 +86,68 @@ func serviceListener() {
 	CheckError(true, err)
 	//listen
 	for {
-		buf := make([]byte, 4096)
+		buf := make([]byte, 2048)
 		rawDataPacket := new(packet)
 		rawDataPacket.Size, rawDataPacket.Sender, err = sock.ReadFromUDP(buf)
 		rawDataPacket.Data = make([]byte, rawDataPacket.Size)
 		CheckError(true, err)
 		copy(rawDataPacket.Data, buf[0:rawDataPacket.Size])
 		processWorkerPool <- rawDataPacket
+		r.Table("raw_data").Insert(rawDataPacket).RunWrite(rethinkSession)
 	}
 }
 
 // processData takes the data from the job channel, processes it and puts it on
 // the rethink worker pool (rtWP)
 func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
+	ipfixSession = ipfix.NewSession()
+	ipfixInterpreter = ipfix.NewInterpreter(ipfixSession)
+
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderCallsign", FieldID: 1, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverCallsign", FieldID: 2, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderLocator", FieldID: 3, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverLocator", FieldID: 4, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "frequency", FieldID: 5, EnterpriseID: 30351, Type: ipfix.Int32})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "sNR", FieldID: 6, EnterpriseID: 30351, Type: ipfix.Uint8})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "iMD", FieldID: 7, EnterpriseID: 30351, Type: ipfix.Uint8})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "decoderSoftware", FieldID: 8, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "antennaInformation", FieldID: 9, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "mode", FieldID: 10, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "informationSource", FieldID: 11, EnterpriseID: 30351, Type: ipfix.Int8})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "persistentIdentifier", FieldID: 12, EnterpriseID: 30351, Type: ipfix.String})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowStartSeconds", FieldID: 150, Type: ipfix.DateTimeSeconds})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowID", FieldID: 148, Type: ipfix.Uint64})
+	ipfixInterpreter.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "selectionSequenceID", FieldID: 301, Type: ipfix.Uint8})
+
 	for bufferData := range jobs {
-		s := ipfix.NewSession()
-		i := ipfix.NewInterpreter(s)
 
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderCallsign", FieldID: 1, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverCallsign", FieldID: 2, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "senderLocator", FieldID: 3, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "receiverLocator", FieldID: 4, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "frequency", FieldID: 5, EnterpriseID: 30351, Type: ipfix.Int32})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "sNR", FieldID: 6, EnterpriseID: 30351, Type: ipfix.Uint8})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "iMD", FieldID: 7, EnterpriseID: 30351, Type: ipfix.Uint8})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "decoderSoftware", FieldID: 8, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "antennaInformation", FieldID: 9, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "mode", FieldID: 10, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "informationSource", FieldID: 11, EnterpriseID: 30351, Type: ipfix.Int8})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "persistentIdentifier", FieldID: 12, EnterpriseID: 30351, Type: ipfix.String})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowStartSeconds", FieldID: 150, Type: ipfix.DateTimeSeconds})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "flowID", FieldID: 148, Type: ipfix.Uint64})
-		i.AddDictionaryEntry(ipfix.DictionaryEntry{Name: "selectionSequenceID", FieldID: 301, Type: ipfix.Uint8})
-
-		msg, err := s.ParseBuffer(bufferData.Data)
+		msg, err := ipfixSession.ParseBuffer(bufferData.Data)
 		if err != nil {
 			r.Table("errors").Insert(dataError{
 				BinaryData:   hex.EncodeToString(bufferData.Data),
 				LengthOfData: bufferData.Size,
 				CreatedAt:    time.Now(),
 				ErrorType:    "ipfix",
-			}).RunWrite(session)
-			// log.Println(err)
+			}).RunWrite(rethinkSession)
+			log.Println("err: ", msg)
 		} else {
 			// log.Println(bufferData)
 			// log.Println("good data")
 		}
 		// CheckError(false, err)
 
+		// for _, x := range msg.TemplateRecords {
+		// 	log.Println(x.TemplateID)
+		// }
+
 		var fieldList []ipfix.InterpretedField
 		for _, record := range msg.DataRecords {
-			fieldList = i.InterpretInto(record, fieldList)
-
+			// log.Println(record)
+			fieldList = ipfixInterpreter.InterpretInto(record, fieldList)
+			// log.Println("tid: ", tid)
 			var data report
 			data.SenderAddr = bufferData.Sender.String()
-			data.RawData = hex.EncodeToString(bufferData.Data)
+			// data.RawData = hex.EncodeToString(bufferData.Data)
 
 			for _, f := range fieldList {
 				if f.EnterpriseID == 30351 {
@@ -166,7 +175,10 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 					case 11:
 						data.InformationSource = f.Value.(int8)
 					case 12:
-						data.PersistentIdentifier = f.Value.(string)
+						// pid := f.Value.(string)
+						// log.Printf("pid: %+v", pid)
+						// data.PersistentIdentifier = hex.DecodeString(pid)
+						// data.PersistentIdentifier = f.Value.(int64)
 					}
 				} else {
 					switch f.FieldID {
@@ -177,7 +189,6 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 					case 301:
 						data.SelectionSequenceID = f.Value.(int8)
 					}
-
 				}
 			}
 			//throw reference to the report struct on the rethink queue.
@@ -195,14 +206,14 @@ func rethinkWorker(w int, jobs <-chan *report) {
 		case data := <-jobs:
 			listOfStuff = append(listOfStuff, *data)
 			if len(listOfStuff) >= batchSize {
-				_, err := r.Table("report").Insert(listOfStuff).RunWrite(session)
+				_, err := r.Table("report").Insert(listOfStuff).RunWrite(rethinkSession)
 				CheckError(true, err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
 			}
 		case <-time.After(time.Second * time.Duration(batchTimeout)):
 			if len(listOfStuff) != 0 {
-				_, err := r.Table("report").Insert(listOfStuff).RunWrite(session)
+				_, err := r.Table("report").Insert(listOfStuff).RunWrite(rethinkSession)
 				CheckError(true, err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
@@ -223,7 +234,7 @@ func main() {
 	flag.Parse()
 	log.Println("processes: ", processWorkers, "; db workers: ", rethinkWorkers, "; batch size: ", batchSize, "; listening on: ", listenerAddress)
 
-	session, err = r.Connect(r.ConnectOpts{
+	rethinkSession, err = r.Connect(r.ConnectOpts{
 		Address:  rethinkServer,
 		Database: "pskreporter",
 		MaxIdle:  10,
