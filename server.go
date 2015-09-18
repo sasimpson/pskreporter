@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/calmh/ipfix"
 	r "github.com/dancannon/gorethink"
+	"github.com/sasimpson/ipfix"
 )
 
 var (
