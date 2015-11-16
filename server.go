@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	r "github.com/dancannon/gorethink"
@@ -12,6 +13,9 @@ import (
 )
 
 var (
+	dl               *log.Logger
+	cDBFlag          bool
+	debug            bool
 	rethinkWorkers   int
 	processWorkers   int
 	batchSize        int
@@ -129,22 +133,26 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 				CreatedAt:    time.Now(),
 				ErrorType:    "ipfix",
 			}).RunWrite(rethinkSession)
-			log.Println("err: ", msg)
-		} else {
-			// log.Println(bufferData)
-			// log.Println("good data")
+			if debug {
+				log.Println("err: ", msg)
+			}
 		}
-		// CheckError(false, err)
 
-		// for _, x := range msg.TemplateRecords {
-		// 	log.Println(x.TemplateID)
-		// }
+		if debug {
+			for _, x := range msg.TemplateRecords {
+				log.Printf("template record - template id: %x", x.TemplateID)
+				log.Printf("template record - template set id: %x", x.TemplateSetID)
+			}
+		}
 
 		var fieldList []ipfix.InterpretedField
+		var senderData []report
+		var receiverData []report
 		for _, record := range msg.DataRecords {
-			// log.Println(record)
+			if debug {
+				log.Printf("data record - template id: %x\n", record.TemplateID)
+			}
 			fieldList = ipfixInterpreter.InterpretInto(record, fieldList)
-			// log.Println("tid: ", tid)
 			var data report
 			data.SenderAddr = bufferData.Sender.String()
 			// data.RawData = hex.EncodeToString(bufferData.Data)
@@ -191,8 +199,24 @@ func processData(w int, jobs <-chan *packet, rtWP chan<- *report) {
 					}
 				}
 			}
-			//throw reference to the report struct on the rethink queue.
-			rtWP <- &data
+			//separate out the receiver and sender datagrams
+			if data.Receiver != "" {
+				receiverData = append(receiverData, data)
+			} else {
+				senderData = append(senderData, data)
+			}
+		}
+		//now take the parsed datagrams and attach
+		if len(receiverData) == 1 {
+			rd := receiverData[0]
+			for _, data := range senderData {
+				data.Receiver = rd.Receiver
+				data.ReceiverLocator = rd.ReceiverLocator
+				data.AntennaInformation = rd.AntennaInformation
+				data.DecoderSoftware = rd.DecoderSoftware
+				//throw reference to the report struct on the rethink queue.
+				rtWP <- &data
+			}
 		}
 	}
 }
@@ -222,9 +246,23 @@ func rethinkWorker(w int, jobs <-chan *report) {
 	}
 }
 
+func createDB() {
+	_ = r.DBCreate("pskreporter").Exec(rethinkSession)
+	// CheckError(true, err)
+	_, err := r.DB("pskreporter").TableCreate("report").RunWrite(rethinkSession)
+	CheckError(false, err)
+	_, err = r.DB("pskreporter").TableCreate("errors").RunWrite(rethinkSession)
+	CheckError(false, err)
+	_, err = r.DB("pskreporter").TableCreate("raw_data").RunWrite(rethinkSession)
+	CheckError(false, err)
+}
+
 func main() {
 	var err error
+	debug = os.Getenv("PSKDEBUG") != ""
+	dl = log.New(os.Stderr, "[pskreporter server] ", log.Lmicroseconds|log.Lmicroseconds)
 
+	flag.BoolVar(&cDBFlag, "createdb", false, "creates the db schema first")
 	flag.IntVar(&processWorkers, "processors", 100, "number of process workers to use, default: 100")
 	flag.IntVar(&rethinkWorkers, "dbworkers", 10, "number of db process workers to use, default: 10")
 	flag.StringVar(&rethinkServer, "rethink-host", "127.0.0.1:28015", "rethinkdb host and port, default: 127.0.0.1:28015")
@@ -241,5 +279,9 @@ func main() {
 		MaxOpen:  200,
 	})
 	CheckError(true, err)
+
+	if cDBFlag {
+		createDB()
+	}
 	serviceListener()
 }
