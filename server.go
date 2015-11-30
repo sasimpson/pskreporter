@@ -9,6 +9,7 @@ import (
 	"time"
 
 	r "github.com/dancannon/gorethink"
+	"github.com/sasimpson/gotilites/serror"
 	"github.com/sasimpson/ipfix"
 )
 
@@ -62,17 +63,6 @@ type dataError struct {
 	ErrorType    string    `gorethink:"errorType"`
 }
 
-// CheckError check error function
-func CheckError(fail bool, err error) {
-	if err != nil {
-		if fail {
-			log.Fatalln(err)
-		} else {
-			log.Println(err)
-		}
-	}
-}
-
 func serviceListener() {
 	//set up worker pools and processes
 	processWorkerPool := make(chan *packet, processWorkers)
@@ -87,14 +77,14 @@ func serviceListener() {
 
 	addr, err := net.ResolveUDPAddr("udp", listenerAddress)
 	sock, err := net.ListenUDP("udp", addr)
-	CheckError(true, err)
+	serror.FailError(err)
 	//listen
 	for {
 		buf := make([]byte, 2048)
 		rawDataPacket := new(packet)
 		rawDataPacket.Size, rawDataPacket.Sender, err = sock.ReadFromUDP(buf)
 		rawDataPacket.Data = make([]byte, rawDataPacket.Size)
-		CheckError(true, err)
+		serror.FailError(err)
 		copy(rawDataPacket.Data, buf[0:rawDataPacket.Size])
 		processWorkerPool <- rawDataPacket
 		r.Table("raw_data").Insert(rawDataPacket).RunWrite(rethinkSession)
@@ -231,14 +221,14 @@ func rethinkWorker(w int, jobs <-chan *report) {
 			listOfStuff = append(listOfStuff, *data)
 			if len(listOfStuff) >= batchSize {
 				_, err := r.Table("report").Insert(listOfStuff).RunWrite(rethinkSession)
-				CheckError(true, err)
+				serror.FailError(err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
 			}
 		case <-time.After(time.Second * time.Duration(batchTimeout)):
 			if len(listOfStuff) != 0 {
 				_, err := r.Table("report").Insert(listOfStuff).RunWrite(rethinkSession)
-				CheckError(true, err)
+				serror.FailError(err)
 				listOfStuff = make([]report, 0, batchSize)
 				continue
 			}
@@ -248,13 +238,12 @@ func rethinkWorker(w int, jobs <-chan *report) {
 
 func createDB() {
 	_ = r.DBCreate("pskreporter").Exec(rethinkSession)
-	// CheckError(true, err)
 	_, err := r.DB("pskreporter").TableCreate("report").RunWrite(rethinkSession)
-	CheckError(false, err)
+	serror.LogError(err)
 	_, err = r.DB("pskreporter").TableCreate("errors").RunWrite(rethinkSession)
-	CheckError(false, err)
+	serror.LogError(err)
 	_, err = r.DB("pskreporter").TableCreate("raw_data").RunWrite(rethinkSession)
-	CheckError(false, err)
+	serror.LogError(err)
 }
 
 func main() {
@@ -278,7 +267,7 @@ func main() {
 		MaxIdle:  10,
 		MaxOpen:  200,
 	})
-	CheckError(true, err)
+	serror.FailError(err)
 
 	if cDBFlag {
 		createDB()
